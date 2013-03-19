@@ -1,4 +1,5 @@
 require 'thread'
+require 'redis_queue'
 require 'robotex'
 require 'anemone/tentacle'
 require 'anemone/page'
@@ -70,7 +71,7 @@ module Anemone
     # and optional *block*
     #
     def initialize(urls, opts = {})
-      @urls = [urls].flatten.map{ |url| url.is_a?(URI) ? url : URI(url) }
+      @urls = urls ? [urls].flatten.map{ |url| url.is_a?(URI) ? url : URI(url) } : []
       @urls.each{ |url| url.path = '/' if url.path.empty? }
 
       @tentacles = []
@@ -89,7 +90,12 @@ module Anemone
     def self.crawl(urls, opts = {})
       self.new(urls, opts) do |core|
         yield core if block_given?
-        core.run
+
+        if urls
+          core.run_core
+        else
+          core.run_tentacles
+        end
       end
     end
 
@@ -145,22 +151,20 @@ module Anemone
     #
     # Perform the crawl
     #
-    def run
+    def run_core
       process_options
 
       @urls.delete_if { |url| !visit_link?(url) }
       return if @urls.empty?
 
-      link_queue = Queue.new
-      page_queue = Queue.new
-
-      @opts[:threads].times do
-        @tentacles << Thread.new { Tentacle.new(link_queue, page_queue, @opts).run }
-      end
+      link_queue = RedisQueue.new('link_queue')
+      page_queue = RedisQueue.new('page_queue')
+      link_queue.reset!
+      page_queue.reset!
 
       @urls.each{ |url| link_queue.enq(url) }
 
-      loop do
+      while link_queue.size > 0 || link_queue.num_working > 0 || page_queue.size > 0 do
         page = page_queue.deq
         @pages.touch_key page.url
         puts "#{page.url} Queue: #{link_queue.size}" if @opts[:verbose]
@@ -172,24 +176,27 @@ module Anemone
           link_queue << [link, page.url.dup, page.depth + 1]
         end
         @pages.touch_keys links
-
         @pages[page.url] = page
-
-        # if we are done with the crawl, tell the threads to end
-        if link_queue.empty? and page_queue.empty?
-          until link_queue.num_waiting == @tentacles.size
-            Thread.pass
-          end
-          if page_queue.empty?
-            @tentacles.size.times { link_queue << :END }
-            break
-          end
-        end
       end
 
-      @tentacles.each { |thread| thread.join }
       do_after_crawl_blocks
       self
+    end
+
+    def run_tentacles
+      process_options
+
+      puts "starting #{@opts[:threads]} threads"
+      tentacles = []
+      @opts[:threads].times do
+        tentacles << Thread.new { Tentacle.new('link_queue', 'page_queue', @opts).run }
+      end
+
+      puts "ready"
+      tentacles.each { |thread| thread.join }
+      puts "all threads exited"
+    rescue Interrupt
+      puts "interrupting threads"
     end
 
     private
