@@ -164,7 +164,7 @@ module Anemone
 
       @urls.each{ |url| link_queue.enq(url) }
 
-      while link_queue.size > 0 || link_queue.num_working > 0 || page_queue.size > 0 do
+      while link_queue.size > 0 || link_queue.num_in_process > 0 || page_queue.size > 0 do
         page = page_queue.deq
         @pages.touch_key page.url
         puts "#{page.url} Queue: #{link_queue.size}" if @opts[:verbose]

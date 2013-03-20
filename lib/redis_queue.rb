@@ -2,11 +2,11 @@ require "redis"
 require "uri"
 
 class RedisQueue
-  attr_reader :redis, :name, :working
+  attr_reader :redis, :name, :in_process
 
   def initialize(name, dsn=nil)
     @name = name
-    @working = "#{@name}:working"
+    @in_process = "#{@name}:in_process"
 
     if dsn
       uri = URI.parse(dsn)
@@ -16,21 +16,25 @@ class RedisQueue
     end
   end
 
-  def incr_working
-    redis.incr(working)
-  end
-
-  def decr_working
-    redis.decr(working)
-  end
-
   def enq(obj)
-    redis.rpush(name, Marshal.dump(obj))
+    redis.lpush(name, Marshal.dump(obj))
   end
 
   def deq
-    list, obj = redis.blpop(name)
-    Marshal.load(obj)
+    if block_given?
+      begin
+        obj = _start_deq
+        yield(obj)
+      ensure
+        _end_deq
+      end
+    else
+      _deq
+    end
+  end
+
+  def num_in_process
+    redis.llen(in_process)
   end
 
   def size
@@ -47,10 +51,22 @@ class RedisQueue
 
   def reset!
     redis.del(name)
-    redis.del(working)
+    redis.del(in_process)
   end
 
-  def num_working
-    redis.get(working).to_i
+  protected
+
+  def _deq
+    list, obj = redis.brpop(name)
+    Marshal.load(obj)
+  end
+
+  def _start_deq
+    obj = redis.brpoplpush(name, in_process)
+    Marshal.load(obj)
+  end
+
+  def _end_deq
+    redis.rpop(in_process)
   end
 end

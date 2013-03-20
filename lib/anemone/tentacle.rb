@@ -21,18 +21,11 @@ module Anemone
     #
     def run
       loop do
-        link, referer, depth = @link_queue.deq
-
-        break if link == :END
-
-        begin
-          @link_queue.incr_working
-          @http.fetch_pages(link, referer, depth).each { |page|
+        @link_queue.deq do |link, referer, depth|
+          @http.fetch_pages(link, referer, depth).each do |page|
             puts "[#{@tag}] #{page.url}" if @opts[:verbose]
             @page_queue << page
-          }
-        ensure
-          @link_queue.decr_working
+          end
         end
 
         delay
